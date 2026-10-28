@@ -8,6 +8,7 @@ import path from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Bot } from "../shared/types.js";
+import { authenticateAsOwner } from "./test-owner-fetch.js";
 
 test("a new studio gets its first team once, on Automatic, with nothing to choose", { timeout: 60_000 }, async () => {
   const root = mkdtempSync(path.join(tmpdir(), "sidemates-first-team-"));
@@ -21,6 +22,10 @@ test("a new studio gets its first team once, on Automatic, with nothing to choos
     env: { ...process.env, OPENBOT_LOAD_ENV: "0", OPENBOT_DATA_DIR: path.join(root, "data"), OPENBOT_PORT: String(address.port), OPENBOT_APP_URL: base, OPENBOT_HOST: "127.0.0.1", OPENBOT_DEPLOYMENT_MODE: "local", NODE_ENV: "production" },
     stdio: ["ignore", "pipe", "pipe"],
   });
+  // Owner credential: loopback is not identity any more, so this test
+  // authenticates with the host's own token file instead of relying on
+  // the removed loopback trust path.
+  authenticateAsOwner(path.join(root, "data"));
   const exited = once(child, "exit"); let log = "";
   for (const stream of [child.stdout, child.stderr]) stream.on("data", (chunk) => { log = (log + chunk).slice(-3_000); });
   try {

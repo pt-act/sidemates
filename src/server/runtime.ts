@@ -152,7 +152,12 @@ export function run(command: string, args: string[], timeoutMs = 30_000, extraEn
 }
 
 export function safeHostEnvironment(extra: Record<string, string> = {}, source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const allowed = ["PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TERM", "SHELL", "TMPDIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "SSH_AUTH_SOCK"];
+  // SSH_AUTH_SOCK is deliberately absent: the model CLI child needs no SSH
+  // identity, and forwarding the agent socket let model-written code sign and
+  // authenticate as the owner without ever reading a private key. Children that
+  // legitimately need a git identity get one through github-write-identity,
+  // which strips the socket before running git.
+  const allowed = ["PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TERM", "SHELL", "TMPDIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"];
   // Sidemates pins the runtime it verified; a self-update mid-studio would
   // swap the binary under running teammates.
   const env: NodeJS.ProcessEnv = { NO_COLOR: "1", OPENCODE_DISABLE_AUTOUPDATE: "true" };

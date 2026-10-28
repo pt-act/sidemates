@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { OpenBotDatabase } from "./testing/database.js";
+import { authenticateAsOwner } from "./test-owner-fetch.js";
 
 /** Gate 1a Phase B: explicit mediated handoff through the real server handlers.
  * A teammate hands ONE exact object; the recipient gets a read-only, hash-stamped
@@ -57,6 +58,10 @@ test("mediated handoff copies one exact object read-only with provenance and no 
     cwd: path.resolve(import.meta.dirname, "../.."), stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, OPENBOT_LOAD_ENV: "0", OPENBOT_OPENCODE_VERSION: "1.18.31", OPENBOT_DATA_DIR: db.dataDir, OPENBOT_PORT: String(port), OPENBOT_HOST: "127.0.0.1", OPENBOT_APP_URL: base, OPENBOT_DEPLOYMENT_MODE: "local", NODE_ENV: "production", OPENBOT_STAGING: "1", OPENBOT_TEST_ALPHA: alpha.id, OPENBOT_TEST_BETA: beta.id },
   });
+  // Owner credential: loopback is not identity any more, so this test
+  // authenticates with the host's own token file instead of relying on
+  // the removed loopback trust path.
+  authenticateAsOwner(db.dataDir);
   const exited = once(child, "exit"); let log = "";
   for (const stream of [child.stdout, child.stderr]) stream.on("data", (d) => { log = (log + d).slice(-3000); });
   try {

@@ -10,6 +10,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { WebSocketServer, type WebSocket } from "ws";
 import { OpenBotDatabase } from "./testing/database.js";
+import { authenticateAsOwner } from "./test-owner-fetch.js";
 
 const RUNTIME = `#!${process.execPath}
 console.log(JSON.stringify({ type: 'text', text: 'Fixture reply for Discord.' }));
@@ -88,6 +89,10 @@ test("Discord: owner-only DM pairing, DMs become tasks, servers and strangers ar
     cwd: path.resolve(import.meta.dirname, "../.."), stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, OPENBOT_LOAD_ENV: "0", OPENBOT_OPENCODE_VERSION: "1.18.31", OPENBOT_DATA_DIR: dataDir, OPENBOT_PORT: String(port), OPENBOT_HOST: "127.0.0.1", OPENBOT_APP_URL: base, OPENBOT_DEPLOYMENT_MODE: "local", NODE_ENV: "production", OPENBOT_STAGING: "1", OPENBOT_DISCORD_API_BASE: discord.restBase, OPENBOT_DISCORD_GATEWAY: discord.gatewayUrl },
   });
+  // Owner credential: loopback is not identity any more, so this test
+  // authenticates with the host's own token file instead of relying on
+  // the removed loopback trust path.
+  authenticateAsOwner(dataDir);
   const exited = once(child, "exit"); let log = "";
   for (const stream of [child.stdout, child.stderr]) stream.on("data", (chunk) => { log = (log + chunk).slice(-3000); });
   const api = (apiPath: string, init: RequestInit = {}) => fetch(base + apiPath, { ...init, headers: { "content-type": "application/json", ...init.headers } });
