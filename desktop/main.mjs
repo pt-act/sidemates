@@ -1,6 +1,6 @@
-import { app, BrowserWindow, Menu, Tray, dialog, globalShortcut, nativeImage, shell } from "electron";
+import { app, BrowserWindow, Menu, Tray, dialog, globalShortcut, nativeImage, session, shell } from "electron";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, openSync } from "node:fs";
+import { existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import os from "node:os";
@@ -39,10 +39,48 @@ function main() {
     }
   });
 
+// The studio no longer treats "connected over loopback" as proof of ownership:
+// any local process, and any page the agent's browser opens, also connects from
+// 127.0.0.1. The owner's credential is this token file, which only the owner's
+// OS account can read (0600 in a 0700 data home). The shell reads it and sets
+// it as the studio cookie so the real UI is authenticated like any other client.
+function ownerAccessToken(dataDir) {
+  try {
+    const token = readFileSync(path.join(dataDir, "access.token"), "utf8").trim();
+    return token || null;
+  } catch {
+    return null;
+  }
+}
+
+async function installOwnerSession(dataDir) {
+  const token = ownerAccessToken(dataDir);
+  if (!token) return;
+  const base = new URL(BASE);
+  const secure = base.protocol === "https:";
+  try {
+    await session.defaultSession.cookies.set({
+      url: base.origin,
+      name: "openbot_access",
+      value: encodeURIComponent(token),
+      path: "/",
+      httpOnly: true,
+      sameSite: "strict",
+      secure,
+      // The shell's own session, not a browser sign-in: no expiry to outlive it.
+    });
+  } catch {
+    // A cookie the shell cannot set means the API stays locked; the UI shows
+    // its sign-in prompt rather than silently acting unauthenticated.
+    console.warn("Sidemates could not attach its local session; sign in with your access key.");
+  }
+}
+
   app.whenReady().then(async () => {
     try {
       if (!DEV_URL) startBundledServer();
       await waitForServer(90_000);
+      if (!DEV_URL) await installOwnerSession(process.env.OPENBOT_DATA_DIR || path.join(os.homedir(), ".openbot"));
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       if (process.env.OPENBOT_QA_SCREENSHOT) {

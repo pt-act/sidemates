@@ -6,7 +6,7 @@ import type { ExecutionLimits } from "./execution-policy.js";
 import { BUNDLED_ACCESS_KIND, bundledSkillsRevision } from "./bundled-skills.js";
 import { rankMemories, nearDuplicateNote, rankTexts } from "./memory-retrieval.js";
 import type { AutoReviewRule } from "./auto-review.js";
-import { mkdirSync, readdirSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { workSourcesInput, type WorkSourcesSettings } from "../shared/work-sources.js";
@@ -309,10 +309,25 @@ export class OpenBotDatabase {
     this.workspacesDir = path.join(this.dataDir, "workspaces");
     this.computersDir = path.join(this.dataDir, "computers");
     this.attachmentsDir = path.join(this.dataDir, "attachments");
-    mkdirSync(this.workspacesDir, { recursive: true });
-    mkdirSync(this.computersDir, { recursive: true });
-    mkdirSync(this.attachmentsDir, { recursive: true });
-    this.db = new DatabaseSync(path.join(this.dataDir, "openbot.sqlite"));
+    // The data home holds the vault key, the SQLite database with every
+    // conversation and credential row, and the workspaces. Restrict the
+    // directory itself to the owner: a 0644 file inside a 0700 directory is
+    // unreachable to another OS account, which is what stops a second local
+    // user from reading the studio's data. Without the directory mode the
+    // database was world-readable. The counter-pattern already used by
+    // deploy/private-runner/setup.sh (install -d -m 0700) is applied here.
+    mkdirSync(this.dataDir, { recursive: true, mode: 0o700 });
+    try { chmodSync(this.dataDir, 0o700); } catch { /* best effort: non-owner mounts, e.g. some network volumes */ }
+    mkdirSync(this.workspacesDir, { recursive: true, mode: 0o700 });
+    mkdirSync(this.computersDir, { recursive: true, mode: 0o700 });
+    mkdirSync(this.attachmentsDir, { recursive: true, mode: 0o700 });
+    const databasePath = path.join(this.dataDir, "openbot.sqlite");
+    this.db = new DatabaseSync(databasePath);
+    // Defence in depth: pin the database (and its WAL sidecars) to the owner
+    // even when the data home was pre-created with a permissive mode.
+    for (const file of [databasePath, `${databasePath}-wal`, `${databasePath}-shm`]) {
+      try { if (existsSync(file)) chmodSync(file, 0o600); } catch { /* sidecar may appear later */ }
+    }
     this.db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
     this.migrate();
     this.seed(options.seedStarterBots === true);
@@ -2437,6 +2452,18 @@ export class OpenBotDatabase {
     const recoveredAt = now();
     this.db.prepare("UPDATE runs SET status='queued',worker_id=NULL,lease_expires_at=NULL,recovered_at=?,progress_at=? WHERE status='running' AND (lease_expires_at IS NULL OR lease_expires_at<=?)").run(recoveredAt, recoveredAt, recoveredAt);
     return expired.map((row) => this.getRun(String(row.id))).filter((run): run is Run => Boolean(run));
+  }
+
+  /** True when this worker still holds an unexpired lease on the run. A run
+   * whose lease lapsed belongs to whoever recovers it next, so a worker that
+   * lost it must not keep acting through a still-valid scoped tool token. */
+  ownsRunLease(runId: string, workerId: string): boolean {
+    const row = this.db.prepare("SELECT worker_id, status, lease_expires_at FROM runs WHERE id=?").get(runId) as
+      | { worker_id: string | null; status: string; lease_expires_at: string | null }
+      | undefined;
+    if (!row || row.status !== "running") return false;
+    if (row.worker_id !== workerId) return false;
+    return Boolean(row.lease_expires_at) && Date.parse(row.lease_expires_at!) > Date.now();
   }
 
   requeueWorkerRuns(workerId: string): number {

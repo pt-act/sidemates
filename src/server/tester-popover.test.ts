@@ -8,6 +8,7 @@ import path from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { OpenBotDatabase } from "./testing/database.js";
+import { authenticateAsOwner } from "./test-owner-fetch.js";
 
 /** Real ChoiceMenu popover lifecycle through the tester harness (S3-H01).
  *
@@ -47,6 +48,10 @@ async function bootFixture(): Promise<Fixture> {
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
+  // Owner credential: loopback is not identity any more, so this test
+  // authenticates with the host's own token file instead of relying on
+  // the removed loopback trust path.
+  authenticateAsOwner(db.dataDir);
   const exited = once(child, "exit");
   const fixture = { root, db, base, child, exited, log: "" } as Fixture;
   child.stdout.on("data", (chunk) => { fixture.log = (fixture.log + chunk).slice(-3_000); });

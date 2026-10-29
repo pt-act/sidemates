@@ -10,6 +10,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { startMcpFixture } from "../../scripts/fixtures/mcp-service.js";
 import { OpenBotDatabase } from "./testing/database.js";
 import { McpConnections } from "./mcp-connections.js";
+import { authenticateAsOwner } from "./test-owner-fetch.js";
 
 test("HTTP approval endpoints refuse unsupported MCP writes without a complete bound review", { timeout: 40_000 }, async () => {
   const root = mkdtempSync(path.join(tmpdir(), "openbot-mcp-approval-")), db = new OpenBotDatabase(root);
@@ -33,6 +34,10 @@ test("HTTP approval endpoints refuse unsupported MCP writes without a complete b
     env: { ...process.env, OPENBOT_LOAD_ENV: "0", OPENBOT_DATA_DIR: db.dataDir, OPENBOT_PORT: String(address.port), OPENBOT_APP_URL: base, OPENBOT_HOST: "127.0.0.1", OPENBOT_DEPLOYMENT_MODE: "local", NODE_ENV: "production" },
     stdio: ["ignore", "pipe", "pipe"],
   });
+  // Owner credential: loopback is not identity any more, so this test
+  // authenticates with the host's own token file instead of relying on
+  // the removed loopback trust path.
+  authenticateAsOwner(db.dataDir);
   const exited = once(child, "exit"); let log = "";
   child.stdout.on("data", (chunk) => { log = (log + chunk).slice(-3_000); });
   child.stderr.on("data", (chunk) => { log = (log + chunk).slice(-3_000); });

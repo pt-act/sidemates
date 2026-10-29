@@ -22,11 +22,23 @@ export interface WorkMailThread {
   replyTo: string | null;
 }
 
+/** Reject addresses carrying Unicode format characters.
+ * Bidi overrides (U+202A-U+202E, U+2066-U+2069), zero-width characters and
+ * other Cf code points render as invisible, so `attacker@evil.example\u202e`
+ * followed by a trusted-looking tail displays as the trusted domain in the
+ * approval preview while delivery follows the real address. Real addresses
+ * never need them, so any address containing one is refused, not normalized. */
+const UNSAFE_ADDRESS_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\p{Cf}]/u;
+
+function isSafeEmailAddress(value: string): boolean {
+  return /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(value) && !UNSAFE_ADDRESS_CHARACTERS.test(value);
+}
+
 function singleReplyAddress(value: string): string | null {
   // Ambiguous/group addresses require manual review; never invent a recipient.
   const match = value.trim().match(/^(?:[^<>\r\n]*<([^<>\s,;]+)>|([^<>\s,;]+))$/);
   const address = match?.[1] || match?.[2] || "";
-  return /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(address) ? address : null;
+  return isSafeEmailAddress(address) ? address : null;
 }
 
 export function decodeWorkThread(id: string, messages: GmailMessage[]): WorkMailThread {
@@ -175,7 +187,7 @@ function cleanHeader(value: string, maximum: number) {
 
 function addresses(value: string) {
   const items = value.split(",").map((item) => item.trim()).filter(Boolean);
-  if (!items.length || items.length > 10 || items.some((item) => !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(item))) throw new Error("Use one to ten valid email addresses.");
+  if (!items.length || items.length > 10 || items.some((item) => !isSafeEmailAddress(item))) throw new Error("Use one to ten valid email addresses.");
   return items;
 }
 
@@ -407,7 +419,7 @@ export class GoogleWorkspaceConnector {
     const attendees = [...new Set((input.attendees || []).map((value) => value.trim().toLowerCase()).filter(Boolean))];
     if (!title || title.length > 300) throw new Error("Give the calendar event a short title.");
     if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || end <= start || end.getTime() - start.getTime() > 7 * 86_400_000) throw new Error("Choose a valid event start and end, no more than seven days apart.");
-    if (attendees.length > 20 || attendees.some((email) => !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(email))) throw new Error("Use at most 20 valid attendee email addresses.");
+    if (attendees.length > 20 || attendees.some((email) => !isSafeEmailAddress(email))) throw new Error("Use at most 20 valid attendee email addresses.");
     if ((input.description || "").length > 8_000 || (input.location || "").length > 500) throw new Error("Shorten the event description or location.");
     const params = new URLSearchParams({ sendUpdates: attendees.length ? "all" : "none" });
     const conferenceData = input.addGoogleMeet ? { createRequest: { requestId: randomBytes(16).toString("hex"), conferenceSolutionKey: { type: "hangoutsMeet" } } } : undefined;

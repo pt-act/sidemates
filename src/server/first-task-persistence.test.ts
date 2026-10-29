@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { OpenBotDatabase } from "./testing/database.js";
+import { authenticateAsOwner } from "./test-owner-fetch.js";
 
 /** D01: a first useful task survives quit and reopen. Disposable host, one
  * teammate, one supported file task through the real stack with a
@@ -42,6 +43,10 @@ async function spawnServer(db: OpenBotDatabase, root: string, bin: string) {
     cwd: path.resolve(import.meta.dirname, "../.."), stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, OPENBOT_LOAD_ENV: "0", OPENBOT_OPENCODE_VERSION: "1.18.31", OPENBOT_DATA_DIR: db.dataDir, OPENBOT_PORT: String(port), OPENBOT_HOST: "127.0.0.1", OPENBOT_APP_URL: base, OPENBOT_DEPLOYMENT_MODE: "local", NODE_ENV: "production", OPENBOT_STAGING: "1" },
   });
+  // Owner credential: loopback is not identity any more, so this test
+  // authenticates with the host's own token file instead of relying on
+  // the removed loopback trust path.
+  authenticateAsOwner(db.dataDir);
   const exited = once(child, "exit"); let log = "";
   for (const stream of [child.stdout, child.stderr]) stream?.on("data", (d) => { log = (log + d).slice(-3000); });
   let ready = false;

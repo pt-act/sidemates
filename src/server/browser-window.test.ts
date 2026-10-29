@@ -9,6 +9,7 @@ import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { OpenBotDatabase } from "./testing/database.js";
 import { BrowserManager } from "./runtime.js";
+import { authenticateAsOwner } from "./test-owner-fetch.js";
 
 test("browser window guards refuse safely before any launch", async () => {
   const root = mkdtempSync(path.join(tmpdir(), "openbot-window-guards-"));
@@ -40,6 +41,10 @@ test("browser window endpoint guards over HTTP", { timeout: 60_000 }, async () =
     env: { ...process.env, OPENBOT_LOAD_ENV: "0", OPENBOT_DATA_DIR: db.dataDir, OPENBOT_PORT: String(address.port), OPENBOT_APP_URL: base, OPENBOT_HOST: "127.0.0.1", OPENBOT_DEPLOYMENT_MODE: "local", NODE_ENV: "production" },
     stdio: ["ignore", "pipe", "pipe"],
   });
+  // Owner credential: loopback is not identity any more, so this test
+  // authenticates with the host's own token file instead of relying on
+  // the removed loopback trust path.
+  authenticateAsOwner(db.dataDir);
   const exited = once(child, "exit"); let log = "";
   child.stdout.on("data", (chunk) => { log = (log + chunk).slice(-3_000); });
   child.stderr.on("data", (chunk) => { log = (log + chunk).slice(-3_000); });

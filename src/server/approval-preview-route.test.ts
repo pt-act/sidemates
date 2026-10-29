@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import type { ApprovalPreview } from "../shared/approval-preview.js";
 import { OpenBotDatabase } from "./database.js";
+import { authenticateAsOwner } from "./test-owner-fetch.js";
 
 test(
   "actual host approval-preview route is bound, non-cached and read-only",
@@ -117,6 +118,10 @@ test(
     child.stdout.on("data", (chunk) => {
       output = (output + String(chunk)).slice(-4000);
     });
+  // Owner credential: loopback is not identity any more, so this test
+  // authenticates with the host's own token file instead of relying on
+  // the removed loopback trust path.
+  authenticateAsOwner(dataDir);
     child.stderr.on("data", (chunk) => {
       output = (output + String(chunk)).slice(-4000);
     });
@@ -143,9 +148,24 @@ test(
         await delay(100);
       }
       assert.ok(ready, `Disposable host must start: ${output}`);
+      // Loopback alone is not owner identity: read the fixture host's own
+      // owner-only token file and authenticate like any other client.
+      const ownerToken = readFileSync(
+        path.join(dataDir, "access.token"),
+        "utf8",
+      ).trim();
+      assert.match(ownerToken, /^[A-Za-z0-9_-]{20,}$/);
       const url = (id: string) =>
         `${base}/api/approvals/${encodeURIComponent(id)}/preview`;
-      const response = await fetch(url(pending.approvalId));
+      const authorization = { authorization: `Bearer ${ownerToken}` };
+      const get = (target: string) => fetch(target, { headers: authorization });
+      const post = (target: string, body: unknown) =>
+        fetch(target, {
+          method: "POST",
+          headers: { ...authorization, "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      const response = await get(url(pending.approvalId));
       assert.equal(response.status, 200);
       assert.equal(response.headers.get("cache-control"), "no-store");
       const preview = (await response.json()) as ApprovalPreview;
@@ -158,7 +178,7 @@ test(
         { label: "Task to start", value: prompt },
       ]);
 
-      const unsupportedResponse = await fetch(url(unsupported.id));
+      const unsupportedResponse = await get(url(unsupported.id));
       assert.equal(unsupportedResponse.status, 200);
       const unsupportedText = await unsupportedResponse.text();
       assert.equal(unsupportedText.includes(sentinel), false);
@@ -168,7 +188,7 @@ test(
       assert.deepEqual(unsupportedPreview.fields, []);
 
       for (const item of structured) {
-        const result = await fetch(url(item.approval.id));
+        const result = await get(url(item.approval.id));
         assert.equal(result.status, 200);
         assert.equal(result.headers.get("cache-control"), "no-store");
         const details = await result.json() as ApprovalPreview;
@@ -181,33 +201,33 @@ test(
         assert.equal(JSON.stringify(details).includes("fixture-only-do-not-use"), false);
       }
 
-      assert.equal((await fetch(url("missing-fixture-id"))).status, 404);
+      assert.equal((await get(url("missing-fixture-id"))).status, 404);
       const resolved = (await (
-        await fetch(url(deniedRun.approvalId))
+        await get(url(deniedRun.approvalId))
       ).json()) as ApprovalPreview;
       assert.equal(resolved.status, "denied");
       assert.equal(resolved.canApprove, false);
       // A proxy reaching the local socket must still provide an access token.
       const unauthenticated = await fetch(url(pending.approvalId), {
-        headers: { "X-Forwarded-For": "203.0.113.8" },
+        headers: { "X-Forwarded-For": "203.0.113.8", "x-test-no-owner-auth": "1" },
       });
       assert.ok([401, 403].includes(unauthenticated.status));
       assert.equal((await unauthenticated.text()).includes(prompt), false);
 
-      const postDecision = (id: string, body: unknown) => fetch(`${base}/api/approvals/${id}/decide`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const postDecision = (id: string, body: unknown) => post(`${base}/api/approvals/${id}/decide`, body);
       const editor = new OpenBotDatabase(fixtureRoot, { dataDir });
       try {
         for (const item of structured.filter(item => item.type !== "mac_organize")) {
-          const before = await (await fetch(url(item.approval.id))).json() as ApprovalPreview;
+          const before = await (await get(url(item.approval.id))).json() as ApprovalPreview;
           assert.equal((await postDecision(item.approval.id, { decision: "approved" })).status, 409);
-          const direct = await fetch(`${base}/api/runs/${item.runId}/approve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reviewFingerprint: before.reviewFingerprint }) });
+          const direct = await post(`${base}/api/runs/${item.runId}/approve`, { reviewFingerprint: before.reviewFingerprint });
           assert.equal(direct.status, 409);
           const connectorId = item.type === "notion_update" ? "notion" : "todoist";
           // Reauthorization with the same displayed account is still a new
           // authority boundary; the previous review must not authorize it.
           editor.completeOAuthConnector(connectorId, { accessToken: "new-fixture-credential" }, item.account!, []);
           assert.equal((await postDecision(item.approval.id, { decision: "approved", reviewFingerprint: before.reviewFingerprint })).status, 409);
-          const reauthorized = await (await fetch(url(item.approval.id))).json() as ApprovalPreview;
+          const reauthorized = await (await get(url(item.approval.id))).json() as ApprovalPreview;
           assert.notEqual(reauthorized.reviewFingerprint, before.reviewFingerprint);
           editor.completeOAuthConnector(connectorId, { accessToken: "other-fixture-credential" }, "different-owner@example.test", []);
           assert.equal((await postDecision(item.approval.id, { decision: "approved", reviewFingerprint: reauthorized.reviewFingerprint })).status, 409);
@@ -215,7 +235,7 @@ test(
           assert.equal(editor.getApprovedAction(item.approval.id), null);
         }
         const unchangedRun = editor.createRun({ threadId: bot.threadId, botId: bot.id, prompt: "Unchanged safe prompt fixture", status: "awaiting_approval", approvalReason: "Review fixture task" });
-        const unchanged = await (await fetch(url(unchangedRun.approvalId!))).json() as ApprovalPreview;
+        const unchanged = await (await get(url(unchangedRun.approvalId!))).json() as ApprovalPreview;
         assert.equal((await postDecision(unchangedRun.approvalId!, { decision: "approved", reviewFingerprint: unchanged.reviewFingerprint })).status, 200);
         assert.equal(editor.getApproval(unchangedRun.approvalId!)!.status, "approved");
         assert.equal((await postDecision(unsupported.id, { decision: "approved", reviewFingerprint: "a".repeat(64) })).status, 409);

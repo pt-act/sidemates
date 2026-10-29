@@ -9,6 +9,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { OpenBotDatabase } from "./testing/database.js";
 import { ComputerManager } from "./runtime.js";
+import { authenticateAsOwner } from "./test-owner-fetch.js";
 
 /** Gate 1a host boundary, exercised through the REAL HTTP handlers.
  *
@@ -62,6 +63,10 @@ test("host mediation denies sibling/ambient access and allows own mediated file 
     cwd: path.resolve(import.meta.dirname, "../.."), stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, OPENBOT_LOAD_ENV: "0", OPENBOT_OPENCODE_VERSION: "1.18.31", OPENBOT_DATA_DIR: db.dataDir, OPENBOT_PORT: String(port), OPENBOT_HOST: "127.0.0.1", OPENBOT_APP_URL: base, OPENBOT_DEPLOYMENT_MODE: "local", NODE_ENV: "production", OPENBOT_TEST_CANARY: canaryPath, OPENBOT_STAGING: "1" },
   });
+  // Owner credential: loopback is not identity any more, so this test
+  // authenticates with the host's own token file instead of relying on
+  // the removed loopback trust path.
+  authenticateAsOwner(db.dataDir);
   const exited = once(child, "exit"); let log = "";
   for (const stream of [child.stdout, child.stderr]) stream.on("data", (data) => { log = (log + data).slice(-3000); });
   try {
@@ -162,6 +167,7 @@ test("computer-on shell cannot leak a sibling workspace through absolute paths",
       await delay(100);
     }
     assert.ok(ready, log || "server did not start");
+    authenticateAsOwner(db.dataDir);
     const sent = await fetch(base + "/api/messages", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: beta.threadId, body: "Check whether you can see the sibling canary.", targetBotIds: [beta.id] }) });
     assert.equal(sent.status, 202, await sent.clone().text());
     const { runs } = await sent.json() as { runs: Array<{ id: string }> };

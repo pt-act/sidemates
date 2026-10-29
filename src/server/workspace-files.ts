@@ -47,6 +47,28 @@ export function listWorkspaceFiles(root: string, maxDepth = 5): WorkspaceFile[] 
   return visit(resolvedRoot, 0);
 }
 
+/** Runtime configuration the model runtime imports or obeys in its OWN
+ * process. A workspace write to any of these is a startup script, not data:
+ * `.opencode/tools/*.ts` and `.opencode/plugins/*.js` are imported at startup,
+ * `.opencode/opencode.json` wins the config merge, and `.claude/settings*.json`,
+ * `CLAUDE.md` and `AGENTS.md` are re-enabled by --setting-sources. Writing them
+ * must never be equivalent to a normal file save. */
+const RESERVED_RUNTIME_PATHS = [".opencode", ".claude"] as const;
+const RESERVED_RUNTIME_FILES = ["opencode.json", "CLAUDE.md", "AGENTS.md", ".mcp.json"] as const;
+
+export function isReservedRuntimePath(relative: string): boolean {
+  const normalized = path.normalize(String(relative || "")).replace(/^[/\\]+/, "").split(path.sep).filter(Boolean);
+  if (!normalized.length) return false;
+  // Windows paths can arrive with either separator.
+  const segments = normalized.flatMap((part) => part.split("/")).filter(Boolean);
+  if (!segments.length) return false;
+  const head = segments[0]!.toLowerCase();
+  if ((RESERVED_RUNTIME_PATHS as readonly string[]).includes(head)) return true;
+  // Only the root config files are honoured at that level by the runtimes; a
+  // nested `notes/CLAUDE.md` is ordinary data and stays writable.
+  return segments.length === 1 && (RESERVED_RUNTIME_FILES as readonly string[]).map((name) => name.toLowerCase()).includes(head);
+}
+
 export type WorkspaceFileRead =
   | { ok: true; path: string; content: string }
   | { ok: false; reason: "not_found" | "too_large" };
@@ -74,10 +96,11 @@ export function readWorkspaceFile(root: string, relativePath: string, maxBytes =
 export async function resolveWorkspacePath(
   root: string,
   relative: string,
-  opts: { createParents?: boolean } = {},
+  opts: { createParents?: boolean; forWrite?: boolean } = {},
 ): Promise<{ ok: true; absolute: string; relative: string } | { ok: false; reason: string }> {
   const raw = String(relative ?? "");
   if (!raw || raw.length > 2_048 || raw.includes("\u0000")) return { ok: false, reason: "invalid_path" };
+  if (opts.forWrite && isReservedRuntimePath(raw)) return { ok: false, reason: "reserved_runtime_path" };
   const normalized = path.normalize(raw);
   if (path.isAbsolute(raw) || normalized === ".." || normalized.startsWith(`..${path.sep}`)) return { ok: false, reason: "outside_workspace" };
   let realRoot: string;
@@ -107,14 +130,14 @@ export async function resolveWorkspacePath(
 export async function writeWorkspaceFile(root: string, relative: string, content: string): Promise<{ ok: true; path: string; characters: number } | { ok: false; reason: string }> {
   const body = String(content);
   if (body.length > 1_000_000) return { ok: false, reason: "too_large" };
-  const resolved = await resolveWorkspacePath(root, relative, { createParents: true });
+  const resolved = await resolveWorkspacePath(root, relative, { createParents: true, forWrite: true });
   if (!resolved.ok) return resolved;
   await fsp.writeFile(resolved.absolute, body, { encoding: "utf8", mode: 0o600 });
   return { ok: true, path: resolved.relative, characters: body.length };
 }
 
 export async function replaceWorkspaceFile(root: string, relative: string, oldText: string, newText: string): Promise<{ ok: true; path: string } | { ok: false; reason: string }> {
-  const resolved = await resolveWorkspacePath(root, relative);
+  const resolved = await resolveWorkspacePath(root, relative, { forWrite: true });
   if (!resolved.ok) return resolved;
   const content = await fsp.readFile(resolved.absolute, "utf8").catch(() => null);
   if (content === null) return { ok: false, reason: "not_found" };

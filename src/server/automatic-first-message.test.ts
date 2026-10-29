@@ -8,6 +8,7 @@ import path from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AppState, Bot } from "../shared/types.js";
+import { authenticateAsOwner } from "./test-owner-fetch.js";
 
 // The team was made before any AI was signed in (or before the first check
 // finished). Once Claude is signed in, the team must be able to send its
@@ -29,6 +30,10 @@ test("teammates on Automatic get an AI as soon as one is connected", { timeout: 
     env: { ...process.env, HOME: root, PATH: `${bin}:/usr/bin:/bin`, OPENBOT_LOAD_ENV: "0", OPENBOT_APPLE_AI: "off", OPENBOT_DATA_DIR: path.join(root, "data"), OPENBOT_PORT: String(address.port), OPENBOT_APP_URL: base, OPENBOT_HOST: "127.0.0.1", OPENBOT_DEPLOYMENT_MODE: "local", NODE_ENV: "production" },
     stdio: ["ignore", "pipe", "pipe"],
   });
+  // Owner credential: loopback is not identity any more, so this test
+  // authenticates with the host's own token file instead of relying on
+  // the removed loopback trust path.
+  authenticateAsOwner(path.join(root, "data"));
   const exited = once(child, "exit"); let log = "";
   for (const stream of [child.stdout, child.stderr]) stream.on("data", (chunk) => { log = (log + chunk).slice(-3_000); });
   const teamAi = async () => ((await (await fetch(base + "/api/state")).json()) as AppState).bots.map((bot) => [bot.name, bot.providerInstanceId, bot.model]);
