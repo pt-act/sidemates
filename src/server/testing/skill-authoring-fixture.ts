@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { OpenBotDatabase } from "./database.js";
+import { authenticateAsOwner } from "../test-owner-fetch.js";
 
 export const fixtureSkill = { name: "Invoice reconciliation", description: "Reconcile owner-supplied invoices.", instructions: "Ask for {{invoice_folder}} and {{currency}}. Read each supplied invoice without changing originals. Compare line items and totals. Save an editable reconciliation with an exceptions sheet. Reopen the output to verify totals and row counts. Stop for missing access or ambiguous currencies. Ask before sending anything.", startUrl: "" };
 
@@ -57,6 +58,9 @@ main().catch(error=>{console.error(error.message);process.exitCode=1;});
     cwd: path.resolve(import.meta.dirname, "../../.."), stdio: ["ignore", "pipe", "pipe"],
     env: { ...forwardedBrowserEnvironment(), ...options.environment, PATH: `${bin}${path.delimiter}${process.env.PATH}`, LANG: "en_US.UTF-8", TZ: "UTC", OPENBOT_LOAD_ENV: "0", OPENBOT_OPENCODE_VERSION: "1.18.31", OPENBOT_DATA_DIR: db.dataDir, OPENBOT_PORT: String(port), OPENBOT_HOST: "127.0.0.1", OPENBOT_APP_URL: base, OPENBOT_DEPLOYMENT_MODE: "local", NODE_ENV: "production" },
   });
+  // The host no longer treats loopback as owner identity, so drive its API as a
+  // real client would: with the owner token from this fixture's data home.
+  authenticateAsOwner(db.dataDir);
   const exited = once(child, "exit"); let log = "";
   for (const stream of [child.stdout, child.stderr]) stream.on("data", data => { log = (log + data).slice(-4000); });
   async function close() {
