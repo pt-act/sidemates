@@ -225,10 +225,38 @@ export class OpenCodeRunner {
     void this.tick();
   }
 
+  /** Stop every child this instance still runs after losing leadership. Their
+   * runs are requeued so the new leader resumes them; nothing keeps executing
+   * under a lease this instance no longer holds. */
+  private deposeRunningChildren() {
+    const runIds = [...this.running.keys()];
+    if (!runIds.length) {
+      this.options.db.requeueWorkerRuns(this.instanceId);
+      return;
+    }
+    for (const runId of runIds) {
+      const control = this.processControls.get(runId);
+      try { control?.checkpoint(); control?.terminate(); }
+      catch { /* the child may already be gone */ }
+    }
+    this.options.db.requeueWorkerRuns(this.instanceId);
+    this.options.onChange();
+  }
+
   private maintainLeadership() {
     try {
       const acquired = this.options.db.acquireRunnerLease(this.instanceId, this.mode);
-      if (!acquired) { this.leader = false; return; }
+      if (!acquired) {
+        // Another worker now owns the queue. This process must stop being able
+        // to act as the owner's agent: a deposed runner used to keep its live
+        // child (and that child's still-valid scoped tool token) alive, so a
+        // stopped worker kept running tools with owner authority. Terminate the
+        // children and requeue their runs so the new leader picks them up.
+        const wasLeader = this.leader;
+        this.leader = false;
+        if (wasLeader) this.deposeRunningChildren();
+        return;
+      }
       const becameLeader = !this.leader;
       this.leader = true;
       this.options.db.renewRunLeases(this.instanceId);
@@ -584,7 +612,7 @@ export class OpenCodeRunner {
     // "--" ends the options: Claude Code's --tools and --allowedTools take every value up to the next
     // option, so without it a trailing prompt is read as a tool name and the run stops with no input.
     const args = useClaude
-      ? ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--model", model.replace(/^claude-code\//, ""), "--permission-mode", "dontAsk", "--tools", "", "--system-prompt", teammateSystemPrompt(bot), "--setting-sources", "project,local", "--mcp-config", mcpConfig, "--strict-mcp-config", "--allowedTools", `${claudeTools},mcp__openbot__work_collect,mcp__openbot__work_report,mcp__openbot__code_benchmark`, ...(previousSession ? ["--resume", previousSession] : []), "--", prompt]
+      ? ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--model", model.replace(/^claude-code\//, ""), "--permission-mode", "dontAsk", "--tools", "", "--system-prompt", teammateSystemPrompt(bot), "--setting-sources", "project", "--mcp-config", mcpConfig, "--strict-mcp-config", "--allowedTools", `${claudeTools},mcp__openbot__work_collect,mcp__openbot__work_report,mcp__openbot__code_benchmark`, ...(previousSession ? ["--resume", previousSession] : []), "--", prompt]
       : ["run", "--auto", "--format", "json", "--model", model, "--dir", workspace, "--agent", run.expectedWorkKind ? "openbot-report" : "openbot", ...attachedFiles.flatMap((file) => ["--file", file]), ...(previousSession ? ["--session", previousSession] : []), "--title", `${bot.name} · Sidemates`, prompt];
     const runEnvironment = safeHostEnvironment(extraEnvironment);
     const liveOpenCode = !useClaude && liveOpenCodeAvailable(runEnvironment.PATH, Boolean(this.options.spawnProcess));

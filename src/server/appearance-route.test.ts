@@ -9,6 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { OpenBotDatabase } from "./database.js";
+import { authenticateAsOwner } from "./test-owner-fetch.js";
 
 test(
   "pure appearance PATCH works before model setup without changing a teammate's work or permissions",
@@ -71,6 +72,10 @@ test(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(value),
       });
+  // Owner credential: loopback is not identity any more, so this test
+  // authenticates with the host's own token file instead of relying on
+  // the removed loopback trust path.
+  authenticateAsOwner(data);
     try {
       let ready = false;
       for (let n = 0; n < 100; n++) {

@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { OpenBotDatabase } from "./testing/database.js";
+import { authenticateAsOwner } from "./test-owner-fetch.js";
 
 // A Claude Code stand-in: signed in, and a reply that streams in chunks.
 const CLAUDE = `#!${process.execPath}
@@ -29,7 +30,10 @@ if (!positional.length) { console.error("Error: Input must be provided either th
 // Teammates get their own identity, not Claude Code's coding-assistant instructions.
 if (!/^You are [^,]+, a persistent Sidemates teammate/.test(args[args.indexOf("--system-prompt") + 1] || "")) { console.error("Error: no teammate system prompt"); process.exit(1); }
 // The owner's personal Claude Code settings (output style, hooks) stay out of teammate jobs.
-if (args[args.indexOf("--setting-sources") + 1] !== "project,local") { console.error("Error: user settings would load"); process.exit(1); }
+// "local" specifically must NOT be loaded: it is the owner's
+// .claude/settings.local.json, whose hooks (SessionStart, etc.) run as
+// model-written configuration and defeated the approval boundary.
+if (args[args.indexOf("--setting-sources") + 1] !== "project") { console.error("Error: user settings would load"); process.exit(1); }
 if (!args.includes("--include-partial-messages")) { console.log(JSON.stringify({ type: "result", subtype: "success", result: "No partial messages were requested." })); process.exit(0); }
 const say = (event) => console.log(JSON.stringify(event));
 const chunks = ["Morning walks ", "clear the head, ", "wake the body, ", "and make the first hour yours."];
@@ -65,6 +69,10 @@ test("Claude Code replies stream into the live preview before the finished answe
     cwd: path.resolve(import.meta.dirname, "../.."), stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, OPENBOT_LOAD_ENV: "0", OPENBOT_DATA_DIR: dataDir, OPENBOT_PORT: String(port), OPENBOT_HOST: "127.0.0.1", OPENBOT_APP_URL: base, OPENBOT_DEPLOYMENT_MODE: "local", NODE_ENV: "production" },
   });
+  // Owner credential: loopback is not identity any more, so this test
+  // authenticates with the host's own token file instead of relying on
+  // the removed loopback trust path.
+  authenticateAsOwner(dataDir);
   const exited = once(child, "exit"); let log = "";
   for (const stream of [child.stdout, child.stderr]) stream.on("data", (chunk) => { log = (log + chunk).slice(-3000); });
   const view = new OpenBotDatabase(root);

@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { OpenBotDatabase } from "./database.js";
 import { queuePreview, queueProposalInput } from "./queue.js";
+import { authenticateAsOwner } from "./test-owner-fetch.js";
 
 // This test never approves a card: on a Mac, approving would create a real
 // reminder. Approval and undo with a fake Mac are covered in queue.test.ts.
@@ -47,6 +48,10 @@ test("the queue routes list, skip and refuse repeats, and the app state carries 
     stdio: "ignore",
     env: { PATH: process.env.PATH, LANG: "en_US.UTF-8", TZ: "UTC", OPENBOT_LOAD_ENV: "0", OPENBOT_DATA_DIR: data, OPENBOT_PORT: String(port), OPENBOT_HOST: "127.0.0.1", OPENBOT_APP_URL: base, OPENBOT_DEPLOYMENT_MODE: "local", NODE_ENV: "test" },
   });
+  // Owner credential: loopback is not identity any more, so this test
+  // authenticates with the host's own token file instead of relying on
+  // the removed loopback trust path.
+  authenticateAsOwner(data);
   const exited = once(child, "exit");
   const post = (route: string) => fetch(`${base}${route}`, { method: "POST" });
   try {

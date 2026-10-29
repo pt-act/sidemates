@@ -123,7 +123,7 @@ import { RunnerCareMonitor } from "./runner-care-monitor.js";
 import { RunnerExternalHeartbeatMonitor } from "./external-heartbeat.js";
 import { providerEventAttempt, slackEventIsFromApp, verifyNotionEventRequest, verifySlackEventRequest } from "./connector-events.js";
 import type { AutomationEvent, ProviderConnectionTest, Routine, RoutineTriggerConfig, Run, RunnerHealth, Readiness } from "../shared/types.js";
-import { listWorkspaceFiles, readWorkspaceFile, replaceWorkspaceFile, resolveWorkspacePath, writeWorkspaceFile } from "./workspace-files.js";
+import { listWorkspaceFiles, readWorkspaceFile, replaceWorkspaceFile, resolveWorkspacePath, writeWorkspaceFile, isReservedRuntimePath } from "./workspace-files.js";
 import { isHandoffPath, mediateHandoffArtifacts } from "./handoff-files.js";
 import { verifyTaskChecks } from "./verification-evidence.js";
 import { approvalPreview } from "../shared/approval-preview.js";
@@ -356,7 +356,13 @@ function deviceSessionCookie(request: express.Request, key: string) {
 
 app.use("/api", (request, response, next) => {
   if (request.method === "GET" && request.path === "/extensions/oauth/callback") return next();
-  if (request.path === "/auth/login" || request.path === "/auth/pair" || request.path === "/auth/pair-browser" || request.path === "/auth/siri-shortcut" || request.path === "/auth/pairing-probe" || request.path.startsWith("/automation-hooks/") || request.path.startsWith("/connector-hooks/") || loopback(request)) return next();
+  if (request.path === "/auth/login" || request.path === "/auth/pair" || request.path === "/auth/pair-browser" || request.path === "/auth/siri-shortcut" || request.path === "/auth/pairing-probe" || request.path.startsWith("/automation-hooks/") || request.path.startsWith("/connector-hooks/")) return next();
+  // The model runtime authenticates to the tool bridge with its own scoped
+  // token, not the owner key, so the owner-key check below must not swallow it.
+  // Presence of the header is not trust: the route verifies the HMAC against
+  // this bot and run before dispatch. A local process without the token simply
+  // gets the route's 403.
+  if (request.path === "/internal/tools" && request.headers["x-openbot-token"]) return next();
   const bearer = request.headers.authorization?.replace(/^Bearer\s+/i, "");
   const credential = acceptedAccessToken(bearer) ? bearer : cookie(request, "openbot_access");
   if (acceptedAccessToken(credential)) {
@@ -1533,6 +1539,14 @@ app.get("/api/connectors/calendar/preview", async (_request, response) => {
 });
 
 app.get("/api/access", (request, response) => {
+  // The access key is the crown jewel: unlike ordinary reads it is only shown
+  // to the owner's own session. Being a local process is not authority, so
+  // require the caller's session to already carry a valid credential, and keep
+  // the loopback/Host/origin check as an additional restriction. The desktop
+  // shell is the one legitimate local reader: createWindow() sets this cookie
+  // from the owner-only token file, so it reaches here authenticated.
+  const callerCredential = request.headers.authorization?.replace(/^Bearer\s+/i, "") || cookie(request, "openbot_access");
+  if (!acceptedAccessToken(callerCredential)) return response.status(401).json({ error: "Sign in with your private access key to see it." });
   if (!loopback(request)) return response.status(403).json({ error: "The access key is only shown on this computer." });
   response.setHeader("Cache-Control", "no-store");
   const remoteEnabled = host !== "127.0.0.1" && host !== "localhost";
@@ -3939,6 +3953,16 @@ app.post("/api/internal/tools", async (request, response) => {
   const parsed = internalToolInput.safeParse(request.body);
   if (!parsed.success || !validToolToken(internalToken, parsed.data.botId, parsed.data.runId, request.headers["x-openbot-token"])) return response.status(403).json({ error: "Internal tool access denied." });
   const toolRun = parsed.success ? db.getRun(parsed.data.runId) : null;
+  // A worker that lost the queue lease may still hold a live child and a valid
+  // scoped token for its run. The token proves which run this is, not that the
+  // caller still owns it: refuse once the run's lease has lapsed without being
+  // renewed, which happens when this worker was deposed or replaced. A live
+  // leader renews every run lease well inside the window, so a healthy runner
+  // never trips this; the check is on the lease rather than an in-memory flag
+  // so a transient database error cannot fail a legitimate tool call.
+  if (toolRun && toolRun.status === "running" && !db.ownsRunLease(toolRun.id, runner.instanceId)) {
+    return response.status(409).json({ error: "This task was taken over by another worker. Stop and let it continue." });
+  }
   if (!parsed.success || !db.getBot(parsed.data.botId) || !toolRun || toolRun.botId !== parsed.data.botId) return response.status(400).json({ error: "Invalid bot tool request." });
   if (toolRun.status !== "running" || runner.isApprovalPaused(toolRun.id)) return response.status(409).json({ error: "This task is no longer active or is pausing for approval." });
   const { botId, runId, action, args } = parsed.data;
@@ -4037,8 +4061,9 @@ app.post("/api/internal/tools", async (request, response) => {
       const input = z.object({ path: z.string().min(1).max(2_048), content: z.string().max(1_000_000) }).strict().safeParse(args);
       if (!input.success) return response.status(400).json({ error: "Provide a workspace-relative path and text content." });
       if (isHandoffPath(input.data.path)) return response.status(403).json({ error: "Handoff inputs are read-only. Write your own result elsewhere in your workspace." });
+      if (isReservedRuntimePath(input.data.path)) return response.status(403).json({ error: "That folder holds runtime configuration, not files. Save your result elsewhere in your workspace." });
       const result = await writeWorkspaceFile(path.join(db.workspacesDir, botId), input.data.path, input.data.content);
-      if (!result.ok) return response.status(400).json({ error: "That path is outside this teammate's workspace or the content is too large." });
+      if (!result.ok) return response.status(result.reason === "reserved_runtime_path" ? 403 : 400).json({ error: result.reason === "reserved_runtime_path" ? "That folder holds runtime configuration, not files. Save your result elsewhere in your workspace." : "That path is outside this teammate's workspace or the content is too large." });
       db.addActivity({ runId, botId, kind: "file", label: "Updated a workspace file", detail: result.path });
       broadcast();
       return response.json(result);
@@ -4048,7 +4073,7 @@ app.post("/api/internal/tools", async (request, response) => {
       if (!input.success) return response.status(400).json({ error: "Provide a workspace-relative path, the exact text to replace, and the replacement." });
       if (isHandoffPath(input.data.path)) return response.status(403).json({ error: "Handoff inputs are read-only. Write your own result elsewhere in your workspace." });
       const result = await replaceWorkspaceFile(path.join(db.workspacesDir, botId), input.data.path, input.data.oldText, input.data.newText);
-      if (!result.ok) return response.status(400).json({ error: result.reason.startsWith("expected_one_match") ? "The exact fragment appears more or less than once; no change was made." : "That file is not editable in this teammate's workspace." });
+      if (!result.ok) return response.status(result.reason === "reserved_runtime_path" ? 403 : 400).json({ error: result.reason === "reserved_runtime_path" ? "That folder holds runtime configuration, not files. Save your result elsewhere in your workspace." : result.reason.startsWith("expected_one_match") ? "The exact fragment appears more or less than once; no change was made." : "That file is not editable in this teammate's workspace." });
       db.addActivity({ runId, botId, kind: "file", label: "Edited a workspace file", detail: result.path });
       broadcast();
       return response.json(result);
